@@ -1,0 +1,154 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Application users (Chefs or Participants)",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["chef", "user"] },
+        "status": { "type": "string", "enum": ["active", "pending", "rejected"] },
+        "groupId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "role", "name", "email"]
+    },
+    "Group": {
+      "title": "Group",
+      "description": "Financial management groups",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "chefId": { "type": "string" },
+        "budget": { "type": "number" },
+        "targetAmount": { "type": "number", "description": "Montant final du groupe defini par le Chef" },
+        "currentBalance": { "type": "number", "description": "Solde actuel de la team defini par le Chef" },
+        "lastBalanceUpdateBy": { "type": "string" },
+        "lastBalanceUpdateAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "chefId"]
+    },
+    "Expense": {
+      "title": "Expense",
+      "description": "Individual expenses in a group",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "groupId": { "type": "string" },
+        "participantId": { "type": "string" },
+        "participantName": { "type": "string" },
+        "amount": { "type": "number" },
+        "date": { "type": "string", "format": "date-time" },
+        "description": { "type": "string" },
+        "category": { "type": "string" }
+      },
+      "required": ["groupId", "amount", "description"]
+    },
+    "Announcement": {
+      "title": "Announcement",
+      "description": "Group announcements",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "groupId": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "importance": { "type": "string", "enum": ["normal", "high"] },
+        "date": { "type": "string", "format": "date-time" }
+      },
+      "required": ["groupId", "title", "message"]
+    },
+    "JoinRequest": {
+      "title": "Join Request",
+      "description": "Requests from users to join a group",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "requesterUid": { "type": "string" },
+        "userName": { "type": "string" },
+        "email": { "type": "string" },
+        "groupName": { "type": "string" },
+        "groupId": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userName", "email", "groupName", "groupId", "status"]
+    },
+    "GroupLookup": {
+      "title": "Group Lookup",
+      "description": "Public mapping for group name uniqueness and resolution",
+      "type": "object",
+      "properties": {
+        "slug": { "type": "string" },
+        "name": { "type": "string" },
+        "groupId": { "type": "string" }
+      },
+      "required": ["slug", "name", "groupId"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "Group discussion messages",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "groupId": { "type": "string" },
+        "senderId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "text": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["groupId", "senderId", "senderName", "text"]
+    },
+    "AccessCode": {
+      "title": "Access Code",
+      "description": "Codes to invite users to a group",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string" },
+        "groupId": { "type": "string" },
+        "groupName": { "type": "string" },
+        "used": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "groupId", "groupName", "used"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "User",
+      "description": "User profiles"
+    },
+    "groups/{groupId}": {
+      "schema": "Group",
+      "description": "Group data"
+    },
+    "groupLookup/{slug}": {
+      "schema": "GroupLookup",
+      "description": "Public group lookup"
+    },
+    "joinRequests/{requestId}": {
+      "schema": "JoinRequest",
+      "description": "Requests to join a group"
+    },
+    "groups/{groupId}/expenses/{expenseId}": {
+      "schema": "Expense",
+      "description": "Group expenses"
+    },
+    "groups/{groupId}/announcements/{announcementId}": {
+      "schema": "Announcement",
+      "description": "Group announcements"
+    },
+    "groups/{groupId}/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Group discussion messages"
+    },
+    "accessCodes/{code}": {
+      "schema": "AccessCode",
+      "description": "Invitation codes"
+    }
+  }
+}

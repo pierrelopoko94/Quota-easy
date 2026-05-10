@@ -1,0 +1,203 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // --- Helper Primitives ---
+    
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function incoming() {
+      return request.resource.data;
+    }
+    
+    function existing() {
+      return resource.data;
+    }
+    
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // --- Relational Helpers (Use with caution) ---
+    
+    function getUser(userId) {
+      return get(/databases/$(database)/documents/users/$(userId)).data;
+    }
+
+    function isMemberOfGroup(groupId) {
+      return isSignedIn() && getUser(request.auth.uid).groupId == groupId;
+    }
+
+    function isChefOfGroup(groupId) {
+      let user = getUser(request.auth.uid);
+      return isSignedIn() && user.role == 'chef' && user.groupId == groupId;
+    }
+
+    // --- Validation Blueprints ---
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'name', 'email', 'role', 'groupId', 'status', 'createdAt'])
+             && data.uid == request.auth.uid
+             && data.name is string && data.name.size() <= 100
+             && data.email is string && data.email.size() <= 150
+             && (data.role == 'chef' || data.role == 'user')
+             && (data.groupId is string && data.groupId.size() <= 128)
+             && (data.status == 'active' || data.status == 'pending' || data.status == 'rejected')
+             && data.createdAt == request.time;
+    }
+
+    function isValidGroup(data) {
+      return data.keys().hasAll(['id', 'name', 'chefId', 'budget', 'createdAt'])
+             && data.chefId == request.auth.uid
+             && data.name is string && data.name.size() <= 100
+             && data.budget is number && data.budget >= 0 && data.budget <= 1000000
+             && (!data.keys().contains('targetAmount') || data.targetAmount is number)
+             && (!data.keys().contains('currentBalance') || data.currentBalance is number)
+             && (!data.keys().contains('lastBalanceUpdateBy') || data.lastBalanceUpdateBy is string)
+             && (!data.keys().contains('lastBalanceUpdateAt') || data.lastBalanceUpdateAt is timestamp)
+             && data.createdAt == request.time;
+    }
+
+    function isValidExpense(data) {
+      return data.keys().hasAll(['groupId', 'participantId', 'participantName', 'amount', 'description', 'category', 'date'])
+             && data.groupId is string
+             && data.participantId == request.auth.uid
+             && data.amount is number && data.amount >= 0 && data.amount <= 1000000
+             && data.description is string && data.description.size() <= 500
+             && data.date == request.time;
+    }
+
+    function isValidAnnouncement(data) {
+      return data.keys().hasAll(['groupId', 'title', 'message', 'importance', 'date'])
+             && data.groupId is string
+             && data.title is string && data.title.size() <= 100
+             && data.message is string && data.message.size() <= 1000
+             && (data.importance == 'normal' || data.importance == 'high')
+             && data.date == request.time;
+    }
+
+    function isValidJoinRequest(data) {
+       return data.keys().hasAll(['requesterUid', 'userName', 'email', 'groupName', 'groupId', 'status', 'createdAt'])
+              && data.requesterUid == request.auth.uid
+              && data.userName is string && data.userName.size() <= 100
+              && data.email is string && data.email.size() <= 150
+              && data.groupName is string && data.groupName.size() <= 100
+              && data.groupId is string
+              && data.status == 'pending'
+              && data.createdAt == request.time;
+    }
+ 
+    function isValidLookup(data) {
+      return data.keys().hasAll(['slug', 'name', 'groupId'])
+             && data.slug is string && data.slug.size() <= 150
+             && data.name is string && data.name.size() <= 150
+             && data.groupId is string;
+    }
+
+    function isValidMessage(data) {
+      return data.keys().hasAll(['groupId', 'senderId', 'senderName', 'text', 'createdAt'])
+             && data.groupId is string
+             && data.senderId == request.auth.uid
+             && data.senderName is string && data.senderName.size() <= 100
+             && data.text is string && data.text.size() <= 2000
+             && data.createdAt == request.time;
+    }
+
+    function isValidAccessCode(data) {
+      return data.keys().hasAll(['code', 'groupId', 'groupName', 'used', 'createdAt'])
+             && data.code is string && data.code.size() <= 20
+             && data.groupId is string
+             && data.groupName is string
+             && data.used == false
+             && data.createdAt == request.time;
+    }
+ 
+    // --- Match Blocks ---
+ 
+    // Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+ 
+    // User Profiles
+    match /users/{userId} {
+      // Allow creation during registration or join flow
+      allow create: if isOwner(userId) && isValidUser(incoming());
+      
+      // Users can see their own info, or info of people in their group
+      allow get: if isOwner(userId) || (isSignedIn() && getUser(request.auth.uid).groupId == existing().groupId);
+      allow list: if isSignedIn() && resource.data.groupId == getUser(request.auth.uid).groupId;
+      
+      // Update allowed for self (name/group during request) or Chef (status move)
+      allow update: if isOwner(userId) || (isSignedIn() && getUser(request.auth.uid).role == 'chef');
+    }
+ 
+    // Groups
+    match /groups/{groupId} {
+      allow create: if isSignedIn() && isValidGroup(incoming());
+      
+      allow get: if isSignedIn() && (isMemberOfGroup(groupId) || isChefOfGroup(groupId));
+      
+      allow update: if isChefOfGroup(groupId) 
+                    && incoming().chefId == existing().chefId; // Cannot change chef
+ 
+      // Expenses Subcollection
+      match /expenses/{expenseId} {
+        allow list: if isMemberOfGroup(groupId);
+        allow create: if isMemberOfGroup(groupId) && isValidExpense(incoming()) && incoming().groupId == groupId;
+        allow delete: if isChefOfGroup(groupId);
+      }
+ 
+      // Announcements Subcollection
+      match /announcements/{announcementId} {
+        allow list: if isMemberOfGroup(groupId);
+        allow create: if isChefOfGroup(groupId) && isValidAnnouncement(incoming()) && incoming().groupId == groupId;
+        allow delete: if isChefOfGroup(groupId);
+      }
+
+      // Messages Subcollection
+      match /messages/{messageId} {
+        allow list: if isMemberOfGroup(groupId);
+        allow create: if isMemberOfGroup(groupId) && isValidMessage(incoming()) && incoming().groupId == groupId;
+      }
+    }
+ 
+    // Group Lookup
+    match /groupLookup/{slug} {
+      allow get: if true; // Public existence check
+      allow create: if isSignedIn() && (incoming().groupId is string);
+    }
+ 
+    // Access Codes
+    match /accessCodes/{codeId} {
+      allow list: if isSignedIn() && isChefOfGroup(resource.data.groupId);
+      allow get: if true; // Public check during join
+      allow create: if isSignedIn() && isChefOfGroup(incoming().groupId) && isValidAccessCode(incoming());
+      allow update: if isSignedIn() && incoming().diff(existing()).affectedKeys().hasOnly(['used']);
+    }
+
+    // Join Requests
+    match /joinRequests/{requestId} {
+      allow create: if isSignedIn() && isValidJoinRequest(incoming());
+      
+      // Chefs can see requests for their group
+      allow list: if isSignedIn() && isChefOfGroup(resource.data.groupId);
+      
+      // Requesters or Chefs can get the specific request
+      allow get: if isSignedIn() && (request.auth.uid == existing().requesterUid || isChefOfGroup(existing().groupId));
+ 
+      // Chefs can approve/reject
+      allow update: if isSignedIn() && (
+        isChefOfGroup(existing().groupId) && incoming().diff(existing()).affectedKeys().hasOnly(['status'])
+      );
+ 
+      allow delete: if isSignedIn() && isChefOfGroup(existing().groupId);
+    }
+  }
+}

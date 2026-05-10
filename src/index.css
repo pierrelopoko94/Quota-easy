@@ -1,0 +1,59 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+
+  --color-brand-primary: #e11d48; /* Crimson Red */
+  --color-brand-secondary: #2563eb; /* Royal Blue */
+  --color-brand-background: #ffffff;
+  --color-brand-surface: #f8fafc;
+  --color-brand-on-background: #0f172a;
+  
+  --radius-card: 2.5rem;
+}
+
+@layer base {
+  body {
+    @apply font-sans bg-brand-background text-brand-on-background antialiased selection:bg-brand-primary/10;
+  }
+}
+
+.dark {
+  --color-brand-background: #020617;
+  --color-brand-on-background: #f8fafc;
+  --color-brand-surface: #0f172a;
+}
+
+.glass-card {
+  @apply bg-white/70 dark:bg-slate-900/40 backdrop-blur-2xl border border-slate-200/50 dark:border-white/5;
+}
+
+.premium-shadow {
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.08);
+}
+
+.dark .premium-shadow {
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+}
+
+.brand-gradient {
+  background: linear-gradient(135deg, #e11d48 0%, #2563eb 100%);
+}
+
+.active-nav {
+  box-shadow: 0 -10px 40px rgba(0,0,0,0.05);
+}
+
+.tracking-tightest {
+  letter-spacing: -0.05em;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
