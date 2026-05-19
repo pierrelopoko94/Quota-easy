@@ -7,6 +7,7 @@ export interface UserProfile {
   role: Role;
   photoURL?: string;
   groupId?: string;
+  allocatedAmount?: number;
   createdAt: string;
 }
 
@@ -46,4 +47,14 @@ export interface Announcement {
   importance: 'normal' | 'high';
   date: string;
   createdBy: string;
+}
+
+export interface Contribution {
+  id: string;
+  groupId: string;
+  userId: string;
+  userName: string;
+  amount: number;
+  status: 'pending' | 'approved';
+  date: any;
 }

@@ -16,7 +16,7 @@
 
 @layer base {
   body {
-    @apply font-sans bg-brand-background text-brand-on-background antialiased selection:bg-brand-primary/10;
+    @apply font-sans bg-brand-background text-brand-on-background antialiased selection:bg-brand-primary/10 transition-colors duration-500;
   }
 }
 
@@ -27,7 +27,7 @@
 }
 
 .glass-card {
-  @apply bg-white/70 dark:bg-slate-900/40 backdrop-blur-2xl border border-slate-200/50 dark:border-white/5;
+  @apply bg-white/70 dark:bg-slate-900/60 backdrop-blur-2xl border border-slate-200/50 dark:border-white/5 transition-all duration-500;
 }
 
 .premium-shadow {

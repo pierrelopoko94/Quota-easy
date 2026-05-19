@@ -11,6 +11,7 @@
         "role": { "type": "string", "enum": ["chef", "user"] },
         "status": { "type": "string", "enum": ["active", "pending", "rejected"] },
         "groupId": { "type": "string" },
+        "allocatedAmount": { "type": "number", "description": "Montant alloué à l'utilisateur par le Chef" },
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["uid", "role", "name", "email"]
@@ -73,10 +74,11 @@
         "email": { "type": "string" },
         "groupName": { "type": "string" },
         "groupId": { "type": "string" },
+        "chefId": { "type": "string" },
         "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
         "createdAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["userName", "email", "groupName", "groupId", "status"]
+      "required": ["userName", "email", "groupName", "groupId", "status", "chefId"]
     },
     "GroupLookup": {
       "title": "Group Lookup",
@@ -85,9 +87,10 @@
       "properties": {
         "slug": { "type": "string" },
         "name": { "type": "string" },
-        "groupId": { "type": "string" }
+        "groupId": { "type": "string" },
+        "chefId": { "type": "string" }
       },
-      "required": ["slug", "name", "groupId"]
+      "required": ["slug", "name", "groupId", "chefId"]
     },
     "Message": {
       "title": "Message",
@@ -110,11 +113,27 @@
       "properties": {
         "code": { "type": "string" },
         "groupId": { "type": "string" },
+        "chefId": { "type": "string" },
         "groupName": { "type": "string" },
         "used": { "type": "boolean" },
         "createdAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["code", "groupId", "groupName", "used"]
+      "required": ["code", "groupId", "groupName", "used", "chefId"]
+    },
+    "Contribution": {
+      "title": "Contribution",
+      "description": "Financial contributions from members to the group",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "groupId": { "type": "string" },
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "amount": { "type": "number" },
+        "status": { "type": "string", "enum": ["pending", "approved"] },
+        "date": { "type": "string", "format": "date-time" }
+      },
+      "required": ["groupId", "userId", "userName", "amount", "status"]
     }
   },
   "firestore": {
@@ -145,6 +164,10 @@
     "groups/{groupId}/messages/{messageId}": {
       "schema": "Message",
       "description": "Group discussion messages"
+    },
+    "groups/{groupId}/contributions/{contributionId}": {
+      "schema": "Contribution",
+      "description": "Member contributions"
     },
     "accessCodes/{code}": {
       "schema": "AccessCode",

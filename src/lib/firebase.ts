@@ -1,33 +1,27 @@
 import { initializeApp } from "firebase/app";
-import { getAuth } from "firebase/auth";
-import { 
-  getFirestore, 
-  initializeFirestore, 
-  enableNetwork, 
-  disableNetwork,
-  clearIndexedDbPersistence
+import {
+  getAuth,
+  setPersistence,
+  browserLocalPersistence,
+  type Auth,
+} from "firebase/auth";
+import {
+  getFirestore,
+  type Firestore,
 } from "firebase/firestore";
 import firebaseConfig from "../../firebase-applet-config.json";
 
 const app = initializeApp(firebaseConfig);
 
-// Use initializeFirestore to enable long-polling which is often required in proxied environments
-export const db = initializeFirestore(app, {
-  experimentalForceLongPolling: true,
-}, firebaseConfig.firestoreDatabaseId || '(default)');
+if (!firebaseConfig.firestoreDatabaseId) {
+  throw new Error("CRITICAL: firestoreDatabaseId is missing in firebase-applet-config.json. Firestore cannot initialize.");
+}
 
-export const auth = getAuth(app);
+// Stable Firestore initialization
+export const db: Firestore = getFirestore(app, firebaseConfig.firestoreDatabaseId.trim());
 
-// Connectivity Monitoring & Recovery
-export const forceReconnect = async () => {
-  try {
-    await disableNetwork(db);
-    await enableNetwork(db);
-    console.log("Firestore network reset triggered");
-  } catch (err) {
-    console.error("Force reconnect failed:", err);
-  }
-};
+export const auth: Auth = getAuth(app);
 
-// Clear persistence on startup to avoid stale cache/offline issues
-clearIndexedDbPersistence(db).catch((err) => console.error("Could not clear persistence:", err));
+// Keep session active with standard local persistence
+setPersistence(auth, browserLocalPersistence)
+  .catch((err) => console.error("Firebase Auth persistence error:", err));
