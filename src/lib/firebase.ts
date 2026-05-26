@@ -7,7 +7,8 @@ import {
 } from "firebase/auth";
 import {
   initializeFirestore,
-  enableIndexedDbPersistence,
+  persistentLocalCache,
+  persistentMultipleTabManager,
   CACHE_SIZE_UNLIMITED,
   type Firestore,
 } from "firebase/firestore";
@@ -19,19 +20,14 @@ if (!firebaseConfig.firestoreDatabaseId) {
   throw new Error("CRITICAL: firestoreDatabaseId is missing in firebase-applet-config.json. Firestore cannot initialize.");
 }
 
-// Stable Firestore initialization with options for slow connections
+// Stable Firestore initialization with options for slow connections and modern persistence caching
 export const db: Firestore = initializeFirestore(app, {
   experimentalForceLongPolling: true,
-  cacheSizeBytes: CACHE_SIZE_UNLIMITED,
+  localCache: persistentLocalCache({
+    tabManager: persistentMultipleTabManager(),
+    cacheSizeBytes: CACHE_SIZE_UNLIMITED,
+  }),
 }, firebaseConfig.firestoreDatabaseId.trim());
-
-enableIndexedDbPersistence(db).catch((err) => {
-  if (err.code === 'failed-precondition') {
-    console.warn('Persistence désactivée - plusieurs onglets ouverts');
-  } else if (err.code === 'unimplemented') {
-    console.warn('Persistence non supportée sur ce navigateur');
-  }
-});
 
 export const auth: Auth = getAuth(app);
 
