@@ -74,6 +74,10 @@ import {
   createUserWithEmailAndPassword,
   onAuthStateChanged,
   signOut,
+  GoogleAuthProvider,
+  signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   User as FirebaseUser
 } from 'firebase/auth';
 
@@ -208,11 +212,13 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
   const isOffline = error instanceof Error && (
     error.message.includes('offline') || 
     error.message.includes('unavailable') ||
-    error.message.includes('network')
+    error.message.includes('network') ||
+    error.message.includes('Failed to fetch')
   );
 
   if (isOffline) {
-    console.warn("Firestore appears offline. Please check your connection.");
+    console.warn("Hors ligne - données en cache utilisées");
+    return; // Ne pas throw si hors ligne
   }
 
   const errInfo = {
@@ -297,7 +303,10 @@ const Input = ({
   onChange, 
   type = 'text', 
   icon: Icon,
-  className
+  className,
+  autoComplete,
+  inputMode,
+  pattern
 }: { 
   label?: string, 
   placeholder: string, 
@@ -305,7 +314,10 @@ const Input = ({
   onChange: (e: React.ChangeEvent<HTMLInputElement>) => void, 
   type?: string,
   icon?: any,
-  className?: string
+  className?: string,
+  autoComplete?: string,
+  inputMode?: "search" | "text" | "none" | "tel" | "url" | "email" | "numeric" | "decimal",
+  pattern?: string
 }) => (
   <div className={cn("space-y-2 w-full", className)}>
     {label && <label className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 ml-1">{label}</label>}
@@ -316,6 +328,9 @@ const Input = ({
         placeholder={placeholder}
         value={value}
         onChange={onChange}
+        autoComplete={autoComplete}
+        inputMode={inputMode}
+        pattern={pattern}
         className={cn(
           "w-full bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800 rounded-2xl py-4 pr-4 transition-all duration-300 focus:border-brand-primary outline-none focus:ring-4 focus:ring-brand-primary/5 text-slate-900 placeholder:text-slate-400 dark:placeholder:text-slate-600",
           Icon ? "pl-12" : "pl-4"
@@ -453,6 +468,87 @@ export default function App() {
   const [groupName, setGroupName] = useState('');
   const [currentRequest, setCurrentRequest] = useState<JoinRequest | null>(null);
   const [showPassword, setShowPassword] = useState(false);
+  const [isGoogleAuth, setIsGoogleAuth] = useState(false);
+
+  const handleGoogleAuth = async (role: 'chef' | 'user' = 'user') => {
+    setActionLoading(true);
+    setError(null);
+    try {
+      const provider = new GoogleAuthProvider();
+      try {
+        const result = await signInWithPopup(auth, provider);
+        const googleUser = result.user;
+        
+        // Vérifie si profil existe déjà
+        const userDoc = await getDoc(doc(db, 'users', googleUser.uid));
+        
+        if (userDoc.exists()) {
+          // Profil existe — le profile listener gère la redirection
+          return;
+        }
+        
+        // Nouveau utilisateur Google
+        // Pré-rempli son nom et email
+        setName(googleUser.displayName || '');
+        setEmail(googleUser.email || '');
+        
+        if (role === 'chef') {
+          // Chef — reste sur auth_chef avec nom pré-rempli
+          // Il doit juste remplir le nom du groupe et créer
+          setAuthMode('register');
+          setView('auth_chef');
+          setIsGoogleAuth(true);
+          // Crée un compte Firebase Auth temporaire
+          // Le profil Firestore sera créé quand il soumettra le formulaire
+        } else {
+          // Utilisateur — reste sur auth_user
+          // Il doit remplir le nom du groupe à rejoindre
+          // Le profil sera créé quand il soumettra la demande
+          setView('auth_user');
+          setIsGoogleAuth(true);
+        }
+      } catch (popupErr: any) {
+        if (
+          popupErr.code === 'auth/popup-blocked' ||
+          popupErr.code === 'auth/popup-closed-by-user' ||
+          popupErr.code === 'auth/cancelled-popup-request'
+        ) {
+          // Fallback vers redirect si popup bloqué
+          localStorage.setItem('pendingGoogleRole', role);
+          await signInWithRedirect(auth, provider);
+          return;
+        }
+        throw popupErr;
+      }
+    } catch (err: any) {
+      setError(handleAuthError(err));
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Redirect result handler for Google Auth on mobile/fallback
+  useEffect(() => {
+    getRedirectResult(auth).then(async (result) => {
+      if (!result?.user) return;
+      const googleUser = result.user;
+      const pendingRole = localStorage.getItem('pendingGoogleRole') || 'user';
+      localStorage.removeItem('pendingGoogleRole');
+      
+      const userDoc = await getDoc(doc(db, 'users', googleUser.uid));
+      if (!userDoc.exists()) {
+        setName(googleUser.displayName || '');
+        setEmail(googleUser.email || '');
+        setIsGoogleAuth(true);
+        if (pendingRole === 'chef') {
+          setAuthMode('register');
+          setView('auth_chef');
+        } else {
+          setView('auth_user');
+        }
+      }
+    }).catch(err => console.error("Redirect result error:", err));
+  }, []);
 
   // Recovery effect for anonymous users with pending/approved requests
   useEffect(() => {
@@ -545,6 +641,7 @@ export default function App() {
         setLoading(false);
       }
     });
+
     return unsub;
   }, [view]);
 
@@ -558,12 +655,13 @@ export default function App() {
         setProfile(profData);
         setCurrentRequest(null);
 
-        if (profData.status === 'active') {
+        if (profData.status === 'active' && profData.groupId) {
           if (profData.groupId) {
             // Use local state to avoid multiple lookups if already set
             getDoc(doc(db, 'groups', profData.groupId)).then((grpDoc) => {
               if (grpDoc.exists()) {
-                setGroup({ id: grpDoc.id, ...grpDoc.data() } as Group);
+                const groupData = { id: grpDoc.id, ...grpDoc.data() } as Group;
+                setGroup(groupData);
                 
                 if (view !== 'dashboard' && !isRedirecting) {
                   setIsRedirecting(true);
@@ -571,18 +669,38 @@ export default function App() {
                     setView('dashboard');
                     setIsRedirecting(false);
                     setLoading(false);
-                  }, 600);
+                  }, 1200);
                 } else {
                   setLoading(false);
                 }
               } else {
-                console.warn("Group not found, redirecting...");
-                setLoading(false);
+                // Groupe pas encore créé — réessaye dans 1.5 seconde
+                setTimeout(async () => {
+                  const grpRetry = await getDoc(doc(db, 'groups', profData.groupId));
+                  if (grpRetry.exists()) {
+                    setGroup({ id: grpRetry.id, ...grpRetry.data() } as Group);
+                    setView('dashboard');
+                    setLoading(false);
+                  } else {
+                    // 2ème retry après 2 secondes
+                    setTimeout(async () => {
+                      const grpRetry2 = await getDoc(doc(db, 'groups', profData.groupId));
+                      if (grpRetry2.exists()) {
+                        setGroup({ id: grpRetry2.id, ...grpRetry2.data() } as Group);
+                        setView('dashboard');
+                      }
+                      setLoading(false);
+                    }, 2000);
+                  }
+                }, 1500);
               }
             });
           } else {
             setLoading(false);
           }
+        } else if (profData.status === 'active' && !profData.groupId) {
+          setView('auth_user');
+          setLoading(false);
         } else if (profData.status === 'pending') {
           setView('pending_approval');
           setLoading(false);
@@ -692,6 +810,62 @@ export default function App() {
 
   const handleChefAuth = async (e: React.FormEvent) => {
     e.preventDefault();
+    
+    if (isGoogleAuth) {
+      // Connexion Google — pas de validation email/password
+      // Juste créer le groupe avec le nom fourni
+      setActionLoading(true);
+      setError(null);
+      try {
+        if (!user) throw new Error('Connexion Google requise.');
+        if (!name) throw new Error('Veuillez entrer votre nom.');
+        if (!groupName) throw new Error('Veuillez entrer le nom du groupe.');
+        
+        const groupSlug = slugify(groupName);
+        const lookupDoc = await getDoc(doc(db, 'groupLookup', groupSlug));
+        if (lookupDoc.exists()) {
+          throw new Error(`Le nom "${groupName}" est déjà utilisé.`);
+        }
+        
+        const groupRef = doc(collection(db, 'groups'));
+        const groupId = groupRef.id;
+        
+        await setDoc(doc(db, 'users', user.uid), {
+          uid: user.uid,
+          name,
+          email: user.email || '',
+          role: 'chef',
+          status: 'active',
+          groupId,
+          createdAt: serverTimestamp()
+        });
+        
+        await setDoc(groupRef, {
+          id: groupId,
+          groupId,
+          name: groupName,
+          groupName,
+          chefId: user.uid,
+          ownerId: user.uid,
+          budget: 2000,
+          targetAmount: 0,
+          createdAt: serverTimestamp()
+        });
+        
+        await setDoc(doc(db, 'groupLookup', groupSlug), {
+          slug: groupSlug,
+          name: groupName,
+          groupId,
+          chefId: user.uid
+        });
+      } catch (err: any) {
+        setError(err.message || handleAuthError(err));
+      } finally {
+        setActionLoading(false);
+      }
+      return;
+    }
+
     setActionLoading(true);
     setError(null);
 
@@ -783,6 +957,52 @@ export default function App() {
 
   const submitJoinRequest = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (isGoogleAuth && user) {
+      setActionLoading(true);
+      setError(null);
+      try {
+        if (!name) throw new Error('Veuillez entrer votre nom.');
+        if (!groupName) throw new Error('Veuillez entrer le nom du groupe.');
+        
+        const groupSlug = slugify(groupName);
+        const lookupDoc = await getDoc(doc(db, 'groupLookup', groupSlug));
+        if (!lookupDoc.exists()) {
+          throw new Error('Ce groupe n\'existe pas.');
+        }
+        
+        const lookupData = lookupDoc.data();
+        const groupId = lookupData.groupId;
+        const chefIdForRequest = lookupData.chefId;
+        
+        await setDoc(doc(db, 'users', user.uid), {
+          uid: user.uid,
+          name,
+          email: user.email || '',
+          role: 'user',
+          status: 'pending',
+          groupId,
+          createdAt: serverTimestamp()
+        });
+        
+        await addDoc(collection(db, 'joinRequests'), {
+          requesterUid: user.uid,
+          userName: name,
+          email: user.email || '',
+          groupName,
+          groupId,
+          chefId: chefIdForRequest,
+          status: 'pending',
+          createdAt: serverTimestamp()
+        });
+      } catch (err: any) {
+        setError(err.message || handleAuthError(err));
+      } finally {
+        setActionLoading(false);
+      }
+      return;
+    }
+
     setActionLoading(true);
     setError(null);
     try {
@@ -899,6 +1119,7 @@ export default function App() {
       setEmail('');
       setPassword('');
       setName('');
+      setIsGoogleAuth(false);
       setCurrentRequest(null);
       setAuthStep('search');
       setView('welcome');
@@ -1022,6 +1243,7 @@ export default function App() {
       setGroup(null);
       setCurrentRequest(null);
       setIsPreviewMode(false);
+      setIsGoogleAuth(false);
       setView('welcome');
     } catch (err) {
       console.error(err);
@@ -1589,146 +1811,165 @@ export default function App() {
  
             <Card className="w-full !p-8 border-white/10">
               {view === 'auth_chef' ? (
-                <>
-                  <div className="flex gap-2 p-1.5 bg-slate-100 dark:bg-slate-900 rounded-2xl mb-8">
-                    {(['login', 'register'] as const).map(m => (
-                      <button 
-                        key={m}
-                        onClick={() => setAuthMode(m)}
-                        className={cn(
-                          "flex-1 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all",
-                          authMode === m ? "bg-white dark:bg-slate-800 shadow-lg text-brand-primary" : "text-slate-400"
-                        )}
-                      >
-                        {m === 'login' ? 'Connexion' : 'Inscription'}
-                      </button>
-                    ))}
-                  </div>
- 
+                isGoogleAuth ? (
                   <form onSubmit={handleChefAuth} className="space-y-5">
-                    {authMode === 'register' && (
-                      <>
-                        <Input 
-                          label="Nom Complet" 
-                          placeholder="Ex: Patrick Lumumba" 
-                          value={name} 
-                          onChange={e => setName(e.target.value)} 
-                          icon={UserIcon}
-                        />
-                        <Input 
-                          label="Nom du Groupe" 
-                          placeholder="Ex: Team Quota" 
-                          value={groupName} 
-                          onChange={e => setGroupName(e.target.value)} 
-                          icon={Users}
-                        />
-                      </>
-                    )}
-                    <Input 
-                      label="Email" 
-                      placeholder="votre@email.com" 
-                      value={email} 
-                      onChange={e => setEmail(e.target.value)} 
-                      icon={Receipt}
-                      type="email"
-                    />
-                    <div className="relative group">
-                      <Key className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-brand-primary transition-colors" />
-                      <input 
-                        type={showPassword ? "text" : "password"}
-                        placeholder="Mot de passe" 
-                        value={password} 
-                        onChange={e => setPassword(e.target.value)} 
-                        className="w-full bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800 rounded-2xl py-4 pr-12 pl-12 transition-all duration-300 focus:border-brand-primary outline-none focus:ring-4 focus:ring-brand-primary/5 text-slate-900"
-                      />
-                      <button 
-                        type="button"
-                        onClick={() => setShowPassword(!showPassword)}
-                        className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-brand-primary p-1"
-                      >
-                        {showPassword ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-                      </button>
+                    <div className="text-center mb-6">
+                      <div className="w-16 h-16 rounded-full bg-brand-primary/10 flex items-center justify-center mx-auto mb-3">
+                        <UserIcon className="w-8 h-8 text-brand-primary" />
+                      </div>
+                      <p className="font-black text-lg">{name}</p>
+                      <p className="text-xs text-slate-400">{email}</p>
                     </div>
- 
+                    <Input 
+                      label="Votre Nom Complet" 
+                      placeholder="Ex: Patrick Lumumba" 
+                      value={name} 
+                      onChange={e => setName(e.target.value)} 
+                      icon={UserIcon}
+                      autoComplete="name"
+                    />
+                    <Input 
+                      label="Nom du Groupe" 
+                      placeholder="Ex: Team Quota" 
+                      value={groupName} 
+                      onChange={e => setGroupName(e.target.value)} 
+                      icon={Users}
+                    />
                     {error && (
                       <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="p-4 bg-red-500/10 border border-red-500/20 rounded-2xl flex gap-3 text-red-500 text-[13px] font-medium">
                         <AlertCircle className="w-5 h-5 shrink-0" />
                         <p>{error}</p>
                       </motion.div>
                     )}
- 
-                    <Button variant="primary" type="submit" className="w-full py-5 rounded-[1.5rem] brand-gradient text-white h-16 text-lg font-black uppercase tracking-widest shadow-xl shadow-brand-primary/20" loading={actionLoading}>
-                      {authMode === 'login' ? 'Se Connecter' : 'Créer le Groupe'}
+                    <Button variant="primary" type="submit" className="w-full py-5 rounded-[1.5rem] brand-gradient text-white h-16 text-lg font-black uppercase tracking-widest" loading={actionLoading}>
+                      Créer mon Groupe
                     </Button>
                   </form>
-                </>
+                ) : (
+                  <>
+                    <div className="flex gap-2 p-1.5 bg-slate-100 dark:bg-slate-900 rounded-2xl mb-8">
+                      {(['login', 'register'] as const).map(m => (
+                        <button 
+                          key={m}
+                          onClick={() => setAuthMode(m)}
+                          className={cn(
+                            "flex-1 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all",
+                            authMode === m ? "bg-white dark:bg-slate-800 shadow-lg text-brand-primary" : "text-slate-400"
+                          )}
+                        >
+                          {m === 'login' ? 'Connexion' : 'Inscription'}
+                        </button>
+                      ))}
+                    </div>
+   
+                    <form onSubmit={handleChefAuth} className="space-y-5">
+                      {authMode === 'register' && (
+                        <>
+                          <Input 
+                            label="Nom Complet" 
+                            placeholder="Ex: Patrick Lumumba" 
+                            value={name} 
+                            onChange={e => setName(e.target.value)} 
+                            icon={UserIcon}
+                            autoComplete="name"
+                          />
+                          <Input 
+                            label="Nom du Groupe" 
+                            placeholder="Ex: Team Quota" 
+                            value={groupName} 
+                            onChange={e => setGroupName(e.target.value)} 
+                            icon={Users}
+                          />
+                        </>
+                      )}
+                      {!isGoogleAuth && (
+                        <>
+                          <Input 
+                            label="Email" 
+                            placeholder="votre@email.com" 
+                            value={email} 
+                            onChange={e => setEmail(e.target.value)} 
+                            icon={Receipt}
+                            type="email"
+                            autoComplete="email"
+                            inputMode="email"
+                          />
+                          <div className="relative group">
+                            <Key className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-brand-primary transition-colors" />
+                            <input 
+                              type={showPassword ? "text" : "password"}
+                              placeholder="Mot de passe" 
+                              value={password} 
+                              onChange={e => setPassword(e.target.value)} 
+                              autoComplete="current-password"
+                              className="w-full bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800 rounded-2xl py-4 pr-12 pl-12 transition-all duration-300 focus:border-brand-primary outline-none focus:ring-4 focus:ring-brand-primary/5 text-slate-900"
+                            />
+                            <button 
+                              type="button"
+                              onClick={() => setShowPassword(!showPassword)}
+                              className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-brand-primary p-1"
+                            >
+                              {showPassword ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+                            </button>
+                          </div>
+       
+                          {error && (
+                            <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="p-4 bg-red-500/10 border border-red-500/20 rounded-2xl flex gap-3 text-red-500 text-[13px] font-medium">
+                              <AlertCircle className="w-5 h-5 shrink-0" />
+                              <p>{error}</p>
+                            </motion.div>
+                          )}
+       
+                          <div className="flex items-center gap-3 my-2">
+                            <div className="flex-1 h-px bg-slate-200 dark:bg-slate-800" />
+                            <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">ou</span>
+                            <div className="flex-1 h-px bg-slate-200 dark:bg-slate-800" />
+                          </div>
+                        </>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => handleGoogleAuth('chef')}
+                        disabled={actionLoading}
+                        className="w-full py-4 rounded-2xl border-2 border-slate-200 dark:border-slate-800 flex items-center justify-center gap-3 font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all disabled:opacity-50"
+                      >
+                        <svg width="20" height="20" viewBox="0 0 48 48">
+                          <path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 12.955 4 4 12.955 4 24s8.955 20 20 20 20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"/>
+                          <path fill="#FF3D00" d="m6.306 14.691 6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 16.318 4 9.656 8.337 6.306 14.691z"/>
+                          <path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238A11.91 11.91 0 0 1 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"/>
+                          <path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571l.003-.002 6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"/>
+                        </svg>
+                        Continuer avec Google
+                      </button>
+
+                      <Button variant="primary" type="submit" className="w-full py-5 rounded-[1.5rem] brand-gradient text-white h-16 text-lg font-black uppercase tracking-widest shadow-xl shadow-brand-primary/20" loading={actionLoading}>
+                        {authMode === 'login' ? 'Se Connecter' : 'Créer le Groupe'}
+                      </Button>
+                    </form>
+                  </>
+                )
               ) : (
                 <>
-                  {!user ? (
-                    <>
-                      <div className="flex gap-2 p-1.5 bg-slate-100 dark:bg-slate-900 rounded-2xl mb-8">
-                        {(['login', 'register'] as const).map(m => (
-                          <button 
-                            key={m}
-                            onClick={() => setAuthMode(m)}
-                            className={cn(
-                              "flex-1 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all",
-                              authMode === m ? "bg-white dark:bg-slate-800 shadow-lg text-brand-secondary" : "text-slate-400"
-                            )}
-                          >
-                            {m === 'login' ? 'Connexion' : 'Inscription'}
-                          </button>
-                        ))}
-                      </div>
-                      <form onSubmit={handleUserAuth} className="space-y-5">
-                        <Input 
-                          label="Email" 
-                          placeholder="votre@email.com" 
-                          value={email} 
-                          onChange={e => setEmail(e.target.value)} 
-                          icon={Receipt}
-                          type="email"
-                        />
-                        <div className="relative group">
-                          <Key className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-brand-secondary transition-colors" />
-                          <input 
-                            type={showPassword ? "text" : "password"}
-                            placeholder="Mot de passe" 
-                            value={password} 
-                            onChange={e => setPassword(e.target.value)} 
-                            className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl py-4 pr-12 pl-12 transition-all duration-300 focus:border-brand-secondary outline-none focus:ring-4 focus:ring-brand-secondary/5 text-slate-900 placeholder:text-slate-400 dark:placeholder:text-slate-500"
-                          />
-                        </div>
-                        {error && (
-                          <div className="p-3 bg-red-500/10 text-red-500 text-xs rounded-xl flex gap-2 mt-2">
-                            <AlertCircle className="w-4 h-4 shrink-0" />
-                            {error}
-                          </div>
-                        )}
-                        <Button variant="secondary" type="submit" className="w-full py-5 rounded-[1.5rem] bg-brand-secondary text-white h-16 text-lg font-black uppercase tracking-widest" loading={actionLoading}>
-                          {authMode === 'login' ? 'Se Connecter' : 'Créer mon Compte'}
-                        </Button>
-                      </form>
-                    </>
-                  ) : (
+                  {isGoogleAuth && user ? (
                     <form onSubmit={submitJoinRequest} className="space-y-6">
-                      <div className="text-center mb-8">
-                        <div className="w-20 h-20 rounded-[2rem] bg-brand-secondary/10 flex items-center justify-center mx-auto mb-4">
-                          <UserPlus className="w-10 h-10 text-brand-secondary" />
+                      <div className="text-center mb-6">
+                        <div className="w-16 h-16 rounded-full bg-brand-secondary/10 flex items-center justify-center mx-auto mb-3">
+                          <UserIcon className="w-8 h-8 text-brand-secondary" />
                         </div>
-                        <h3 className="text-2xl font-black italic tracking-tightest text-brand-secondary">Demande d'Accès</h3>
-                        <p className="text-slate-500 text-sm font-medium">Rejoignez un groupe existant</p>
+                        <p className="font-black text-lg">{name}</p>
+                        <p className="text-xs text-slate-400">{email}</p>
                       </div>
-
                       <Input 
                         label="Votre Nom" 
                         placeholder="Ex: Patrick" 
                         value={name} 
                         onChange={e => setName(e.target.value)} 
                         icon={UserIcon}
+                        autoComplete="name"
                       />
                       <Input 
-                        label="Nom du Groupe" 
+                        label="Nom du Groupe à Rejoindre" 
                         placeholder="Ex: Team Quota" 
                         value={groupName} 
                         onChange={e => setGroupName(e.target.value)} 
@@ -1741,18 +1982,141 @@ export default function App() {
                         onChange={e => setGroupCode(e.target.value)} 
                         icon={Key}
                       />
-
                       {error && (
                         <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="p-4 bg-red-500/10 border border-red-500/20 rounded-2xl flex gap-3 text-red-500 text-[13px] font-medium">
                           <AlertCircle className="w-5 h-5 shrink-0" />
                           <p>{error}</p>
                         </motion.div>
                       )}
-
                       <Button variant="secondary" type="submit" className="w-full py-5 rounded-[1.5rem] bg-brand-secondary text-white h-16 text-lg font-black uppercase tracking-widest" loading={actionLoading}>
                         Envoyer ma Demande
                       </Button>
                     </form>
+                  ) : (
+                    <>
+                      {!user ? (
+                        <>
+                          <div className="flex gap-2 p-1.5 bg-slate-100 dark:bg-slate-900 rounded-2xl mb-8">
+                            {(['login', 'register'] as const).map(m => (
+                              <button 
+                                key={m}
+                                onClick={() => setAuthMode(m)}
+                                className={cn(
+                                  "flex-1 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all",
+                                  authMode === m ? "bg-white dark:bg-slate-800 shadow-lg text-brand-secondary" : "text-slate-400"
+                                )}
+                              >
+                                {m === 'login' ? 'Connexion' : 'Inscription'}
+                              </button>
+                            ))}
+                          </div>
+                          <form onSubmit={handleUserAuth} className="space-y-5">
+                            {!isGoogleAuth && (
+                              <>
+                                <Input 
+                                  label="Email" 
+                                  placeholder="votre@email.com" 
+                                  value={email} 
+                                  onChange={e => setEmail(e.target.value)} 
+                                  icon={Receipt}
+                                  type="email"
+                                  autoComplete="email"
+                                  inputMode="email"
+                                />
+                                <div className="relative group">
+                                  <Key className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-brand-secondary transition-colors" />
+                                  <input 
+                                    type={showPassword ? "text" : "password"}
+                                    placeholder="Mot de passe" 
+                                    value={password} 
+                                    onChange={e => setPassword(e.target.value)} 
+                                    autoComplete="current-password"
+                                    className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl py-4 pr-12 pl-12 transition-all duration-300 focus:border-brand-secondary outline-none focus:ring-4 focus:ring-brand-secondary/5 text-slate-900 placeholder:text-slate-400 dark:placeholder:text-slate-500"
+                                  />
+                                </div>
+                                {error && (
+                                  <div className="p-3 bg-red-500/10 text-red-500 text-xs rounded-xl flex gap-2 mt-2">
+                                    <AlertCircle className="w-4 h-4 shrink-0" />
+                                    {error}
+                                  </div>
+                                )}
+
+                                {/* Google Auth button placement moved before submit button */}
+                              </>
+                            )}
+
+                            <div className="flex items-center gap-3 my-2">
+                              <div className="flex-1 h-px bg-slate-200 dark:bg-slate-800" />
+                              <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">ou</span>
+                              <div className="flex-1 h-px bg-slate-200 dark:bg-slate-800" />
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => handleGoogleAuth('user')}
+                              disabled={actionLoading}
+                              className="w-full py-4 rounded-2xl border-2 border-slate-200 dark:border-slate-800 flex items-center justify-center gap-3 font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all disabled:opacity-50"
+                            >
+                              <svg width="20" height="20" viewBox="0 0 48 48">
+                                <path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 12.955 4 4 12.955 4 24s8.955 20 20 20 20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"/>
+                                <path fill="#FF3D00" d="m6.306 14.691 6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 16.318 4 9.656 8.337 6.306 14.691z"/>
+                                <path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238A11.91 11.91 0 0 1 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"/>
+                                <path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571l.003-.002 6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"/>
+                              </svg>
+                              Continuer avec Google
+                            </button>
+
+                            <Button variant="secondary" type="submit" className="w-full py-5 rounded-[1.5rem] bg-brand-secondary text-white h-16 text-lg font-black uppercase tracking-widest" loading={actionLoading}>
+                              {authMode === 'login' ? 'Se Connecter' : 'Créer mon Compte'}
+                            </Button>
+                          </form>
+                        </>
+                      ) : (
+                        <form onSubmit={submitJoinRequest} className="space-y-6">
+                          <div className="text-center mb-8">
+                            <div className="w-20 h-20 rounded-[2rem] bg-brand-secondary/10 flex items-center justify-center mx-auto mb-4">
+                              <UserPlus className="w-10 h-10 text-brand-secondary" />
+                            </div>
+                            <h3 className="text-2xl font-black italic tracking-tightest text-brand-secondary">Demande d'Accès</h3>
+                            <p className="text-slate-500 text-sm font-medium">Rejoignez un groupe existant</p>
+                          </div>
+
+                          <Input 
+                            label="Votre Nom" 
+                            placeholder="Ex: Patrick" 
+                            value={name} 
+                            onChange={e => setName(e.target.value)} 
+                            icon={UserIcon}
+                            autoComplete="name"
+                          />
+                          <Input 
+                            label="Nom du Groupe" 
+                            placeholder="Ex: Team Quota" 
+                            value={groupName} 
+                            onChange={e => setGroupName(e.target.value)} 
+                            icon={Users}
+                          />
+                          <Input 
+                            label="Code du Groupe (Optionnel)" 
+                            placeholder="Ex: QE-1234" 
+                            value={groupCode} 
+                            onChange={e => setGroupCode(e.target.value)} 
+                            icon={Key}
+                          />
+
+                          {error && (
+                            <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="p-4 bg-red-500/10 border border-red-500/20 rounded-2xl flex gap-3 text-red-500 text-[13px] font-medium">
+                              <AlertCircle className="w-5 h-5 shrink-0" />
+                              <p>{error}</p>
+                            </motion.div>
+                          )}
+
+                          <Button variant="secondary" type="submit" className="w-full py-5 rounded-[1.5rem] bg-brand-secondary text-white h-16 text-lg font-black uppercase tracking-widest" loading={actionLoading}>
+                            Envoyer ma Demande
+                          </Button>
+                        </form>
+                      )}
+                    </>
                   )}
                 </>
               )}
@@ -2725,6 +3089,8 @@ export default function App() {
                                   type="number" 
                                   value={editContribAmount} 
                                   onChange={e => setEditContribAmount(e.target.value)}
+                                  inputMode="decimal"
+                                  pattern="[0-9]*"
                                   className="w-20 bg-white dark:bg-slate-900 border border-brand-primary rounded-lg px-2 py-1 text-sm outline-none"
                                   autoFocus
                                 />
@@ -2818,6 +3184,8 @@ export default function App() {
                   onChange={e => setUserAmountInput(e.target.value)} 
                   icon={Coins}
                   type="number"
+                  inputMode="decimal"
+                  pattern="[0-9]*"
                 />
                 <Button variant="primary" type="submit" className="w-full py-4 text-lg" loading={actionLoading}>
                   Ajouter le Montant
@@ -2838,6 +3206,8 @@ export default function App() {
                   onChange={e => setContribAmount(e.target.value)} 
                   icon={Coins}
                   type="number"
+                  inputMode="decimal"
+                  pattern="[0-9]*"
                 />
                 <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest text-center">
                   Le chef devra valider ce montant pour qu'il soit comptabilisé dans le solde de la team.
@@ -2862,6 +3232,8 @@ export default function App() {
                   onChange={e => setExpenseAmount(e.target.value)} 
                   icon={Coins}
                   type="number"
+                  inputMode="decimal"
+                  pattern="[0-9]*"
                 />
                 <Input 
                   label="Description" 
@@ -2917,6 +3289,8 @@ export default function App() {
                   onChange={e => setTargetAmountInput(e.target.value)} 
                   icon={Sparkles}
                   type="number"
+                  inputMode="decimal"
+                  pattern="[0-9]*"
                 />
                 <p className="text-[11px] text-slate-500 font-medium leading-relaxed italic">
                   Ce montant définit l'objectif global de la team. L'analyse automatique se basera sur ce chiffre pour calculer le reste à payer.
