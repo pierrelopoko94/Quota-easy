@@ -9,7 +9,6 @@ import {
   initializeFirestore,
   persistentLocalCache,
   persistentMultipleTabManager,
-  CACHE_SIZE_UNLIMITED,
   type Firestore,
 } from "firebase/firestore";
 import firebaseConfig from "../../firebase-applet-config.json";
@@ -25,7 +24,6 @@ export const db: Firestore = initializeFirestore(app, {
   experimentalForceLongPolling: true,
   localCache: persistentLocalCache({
     tabManager: persistentMultipleTabManager(),
-    cacheSizeBytes: CACHE_SIZE_UNLIMITED,
   }),
 }, firebaseConfig.firestoreDatabaseId.trim());
 
